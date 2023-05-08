@@ -4,11 +4,15 @@
 
 use dashmap::DashMap;
 use std::sync::Arc;
+use std::time::Duration;
+use dashmap::mapref::multiple::{RefMulti};
 use tokio::sync::{broadcast, Mutex};
 use uuid::Uuid;
 use serde::{Deserialize, Serialize};
+use tokio::time;
+use crate::server::libs::current_time_secs;
 
-pub const MAX_ROOM_SIZE: usize = 2;
+pub const MIN_AGE: u64 = 3600;
 
 pub type Rooms = Arc<DashMap<Uuid, Arc<Room>>>;
 
@@ -32,11 +36,26 @@ pub type AppState = Arc<State>;
 
 pub fn new_app_state() -> AppState {
     // create the room storage
-    let rooms = Arc::new(DashMap::new());
-    // create a background task to clear out expired room entries
-
+    let rooms = Arc::new(DashMap::with_capacity_and_shard_amount(1000, 16));
+    // create a background task to clear out expired room entries (garbage collection)
+    let shared_rooms = rooms.clone();
+    tokio::spawn(async move {
+        // create an interval to run this operation every hour
+        let mut interval = time::interval(Duration::from_secs(60 * 60));
+        loop {
+            interval.tick().await;
+            // iterate through each room to check if it should be pruned
+            for e in shared_rooms.iter() {
+                let entry: RefMulti<Uuid, Arc<Room>> = e;
+                let pair = entry.pair();
+                // check if the last action was old enough to expire the entry
+                let last_action = pair.1.room_state.lock().await.last_action;
+                if current_time_secs() - last_action > MIN_AGE {
+                    shared_rooms.remove(pair.0);
+                }
+            }
+        }
+    });
     // create application state
-    Arc::new(State {
-        rooms: rooms.clone()
-    })
+    Arc::new(State { rooms })
 }

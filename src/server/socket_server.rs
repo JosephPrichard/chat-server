@@ -13,7 +13,7 @@ use axum_sessions::extractors::WritableSession;
 use tracing::log::info;
 use crate::server::libs::{current_time_secs, error_res, Res};
 use crate::server::session::{get_user_or_guest};
-use crate::server::state::{AppState, MAX_ROOM_SIZE, Room, RoomState};
+use crate::server::state::{AppState, Room, RoomState};
 use axum::extract::ws::{Message, WebSocket};
 use futures::{SinkExt, stream::StreamExt};
 use tokio::sync::broadcast::error::SendError;
@@ -21,6 +21,8 @@ use tokio::sync::{broadcast, Mutex, MutexGuard};
 use tracing::log::warn;
 use crate::server::socket_handlers::{handle_chat, handle_join, handle_leave, MsgIn, MsgInCode};
 use crate::server::session::User;
+
+pub const MAX_ROOM_SIZE: usize = 2;
 
 #[derive(Deserialize, Serialize)]
 pub struct RoomId {
@@ -70,7 +72,7 @@ pub async fn handle_create_room(State(state): State<AppState>) -> Json<RoomId> {
     let uuid = Uuid::new_v4();
     // create a new room
     let room = Room {
-        broadcast_tx: broadcast::channel(MAX_ROOM_SIZE).0,
+        broadcast_tx: broadcast::channel(128).0,
         room_state: Mutex::new(RoomState {
             messages: vec![],
             count: 0,
