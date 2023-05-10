@@ -6,7 +6,7 @@ use axum_sessions::extractors::WritableSession;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-pub(crate) type User = Uuid;
+pub type User = Uuid;
 
 pub fn set_user(mut sess_writer: WritableSession, sess: &User) {
     sess_writer
@@ -14,7 +14,7 @@ pub fn set_user(mut sess_writer: WritableSession, sess: &User) {
         .expect("Could not store the session.");
 }
 
-pub fn get_user_or_guest(sess_writer: WritableSession) -> User {
+pub fn get_user(sess_writer: WritableSession) -> User {
     let fetched_sess: Option<User> = sess_writer.get("session");
     match fetched_sess {
         Some(sess) => sess,

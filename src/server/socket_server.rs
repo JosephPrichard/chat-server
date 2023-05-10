@@ -12,39 +12,36 @@ use axum::response::{Response};
 use axum_sessions::extractors::WritableSession;
 use tracing::log::info;
 use crate::server::libs::{current_time_secs, error_res, Res};
-use crate::server::session::{get_user_or_guest};
+use crate::server::session::{get_user};
 use crate::server::state::{AppState, Room, RoomState};
 use axum::extract::ws::{Message, WebSocket};
 use futures::{SinkExt, stream::StreamExt};
 use tokio::sync::broadcast::error::SendError;
 use tokio::sync::{broadcast, Mutex, MutexGuard};
 use tracing::log::warn;
-use crate::server::socket_handlers::{handle_chat, handle_join, handle_leave, MsgIn, MsgInCode};
+use crate::server::message_handlers::{handle_chat, handle_join, handle_leave, MsgIn, MsgInCode};
 use crate::server::session::User;
 
-pub const MAX_ROOM_SIZE: usize = 2;
+pub const MAX_ROOM_SIZE: usize = 12;
 
 #[derive(Deserialize, Serialize)]
 pub struct RoomId {
     pub room_id: String,
 }
 
-pub struct SocketContext {
+#[derive(Clone)]
+pub struct ConnContext {
     pub room: Arc<Room>,
     pub sender: User,
 }
 
-impl SocketContext {
-    pub async fn broadcast(&self, text: String) -> Result<usize, SendError<String>> {
+impl ConnContext {
+    pub fn broadcast(&self, text: String) -> Result<usize, SendError<String>> {
         self.room.broadcast_tx.send(text)
     }
 
     pub async fn lock_room(&self) -> MutexGuard<RoomState> {
         self.room.room_state.lock().await
-    }
-
-    pub async fn messages(&self) -> Vec<String> {
-        return self.lock_room().await.messages.clone()
     }
 
     pub async fn touch_room(&self) {
@@ -55,16 +52,16 @@ impl SocketContext {
         self.lock_room().await.messages.push(text)
     }
 
-    pub async fn inc_count(&self) {
-        self.lock_room().await.count += 1;
+    pub async fn inc_user_count(&self) {
+        self.lock_room().await.user_count += 1;
     }
 
-    pub async fn dec_count(&self) {
-        self.lock_room().await.count -= 1;
+    pub async fn dec_user_count(&self) {
+        self.lock_room().await.user_count -= 1;
     }
 
-    pub async fn count(&self) -> usize {
-        return self.lock_room().await.count;
+    pub async fn user_count(&self) -> usize {
+        return self.lock_room().await.user_count;
     }
 }
 
@@ -75,7 +72,7 @@ pub async fn handle_create_room(State(state): State<AppState>) -> Json<RoomId> {
         broadcast_tx: broadcast::channel(128).0,
         room_state: Mutex::new(RoomState {
             messages: vec![],
-            count: 0,
+            user_count: 0,
             last_action: current_time_secs(),
         }),
     };
@@ -93,24 +90,22 @@ pub async fn handle_ws_upgrade(
     sess_writer: WritableSession,
 ) -> Response {
     // get the user session to pass to ws context
-    let sender = get_user_or_guest(sess_writer);
+    let sender = get_user(sess_writer);
     // pass an arc to the room to the websocket handler function
-    let room_id = Uuid::parse_str(&params.room_id);
-    if room_id.is_err() {
+    let Ok(room_id) = Uuid::parse_str(&params.room_id) else {
         return error_res(StatusCode::BAD_REQUEST, "Invalid uuid format");
-    }
+    };
     // get the room, and return an error if none
-    let room = state.rooms.get(&room_id.unwrap());
-    if room.is_none() {
+    let Some(room) = state.rooms.get(&room_id) else {
         return error_res(StatusCode::NOT_FOUND, "No room exists for id");
-    }
+    };
     // create the socket context
-    let context = SocketContext {
-        room: room.unwrap().clone(),
-        sender: sender.clone(),
+    let context = ConnContext {
+        room: room.clone(),
+        sender,
     };
     // check if the room is full or not, and if so return an error
-    if context.count().await >= MAX_ROOM_SIZE {
+    if context.user_count().await >= MAX_ROOM_SIZE {
         return error_res(StatusCode::FORBIDDEN, "Room is full");
     }
     // do upgrade on the websocket
@@ -118,17 +113,16 @@ pub async fn handle_ws_upgrade(
     ws.on_upgrade(move |socket| handle_socket(socket, context))
 }
 
-pub async fn handle_socket(ws: WebSocket, context: SocketContext) {
+pub async fn handle_socket(ws: WebSocket, context: ConnContext) {
     let (mut tx, mut rx) = ws.split();
-    let shared_context = Arc::new(context);
 
     // handle user joining the room
-    if let Err(e) = handle_join(&mut tx, &shared_context).await {
+    if let Err(e) = handle_join(&mut tx, &context).await {
         warn!("Error occurred in joining: {}", e.to_string());
     };
 
     // spawn a task to subscribe to the broadcast channel and forward broadcast requests to client
-    let room = shared_context.clone().room.clone();
+    let room = context.room.clone();
     let mut send_task = tokio::spawn(async move {
         // subscribe to the broadcast channel
         let mut room_rx = room.broadcast_tx.subscribe();
@@ -141,7 +135,7 @@ pub async fn handle_socket(ws: WebSocket, context: SocketContext) {
     });
 
     // spawn a task to handle each message from the websocket receiver
-    let recv_context = shared_context.clone();
+    let recv_context = context.clone();
     let mut recv_task = tokio::spawn(async move {
         // take messages off the recv and handle them on the server
         while let Some(Ok(Message::Text(text))) = rx.next().await {
@@ -158,7 +152,7 @@ pub async fn handle_socket(ws: WebSocket, context: SocketContext) {
         },
         _ = (&mut recv_task) => {
             // if the receiver aborts, broadcast using sender that they left
-            if let Err(e) = handle_leave(&shared_context.clone()).await {
+            if let Err(e) = handle_leave(&context).await {
                 warn!("Error occurred in handling leave: {}", e.to_string())
             }
             send_task.abort()
@@ -166,7 +160,7 @@ pub async fn handle_socket(ws: WebSocket, context: SocketContext) {
     }
 }
 
-async fn handle_socket_recv(text: String, context: &SocketContext) -> Res<()> {
+async fn handle_socket_recv(text: String, context: &ConnContext) -> Res<()> {
     // deserialize message type, and handle any errors
     let msg: MsgIn = serde_json::from_str(&text)?;
     // call the corresponding message handler
