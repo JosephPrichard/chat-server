@@ -43,26 +43,6 @@ impl ConnContext {
     pub async fn lock_room(&self) -> MutexGuard<RoomState> {
         self.room.room_state.lock().await
     }
-
-    pub async fn touch_room(&self) {
-        self.lock_room().await.last_action = current_time_secs()
-    }
-
-    pub async fn push_message(&self, text: String) {
-        self.lock_room().await.messages.push(text)
-    }
-
-    pub async fn inc_user_count(&self) {
-        self.lock_room().await.user_count += 1;
-    }
-
-    pub async fn dec_user_count(&self) {
-        self.lock_room().await.user_count -= 1;
-    }
-
-    pub async fn user_count(&self) -> usize {
-        return self.lock_room().await.user_count;
-    }
 }
 
 pub async fn handle_create_room(State(state): State<AppState>) -> Json<RoomId> {
@@ -105,7 +85,7 @@ pub async fn handle_ws_upgrade(
         sender,
     };
     // check if the room is full or not, and if so return an error
-    if context.user_count().await >= MAX_ROOM_SIZE {
+    if context.lock_room().await.user_count >= MAX_ROOM_SIZE {
         return error_res(StatusCode::FORBIDDEN, "Room is full");
     }
     // do upgrade on the websocket

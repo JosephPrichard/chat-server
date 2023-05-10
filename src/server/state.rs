@@ -14,6 +14,12 @@ use crate::server::libs::current_time_secs;
 
 pub const MIN_AGE: u64 = 3600;
 
+pub type AppState = Arc<State>;
+
+pub struct State {
+    pub rooms: Rooms,
+}
+
 pub type Rooms = Arc<DashMap<Uuid, Arc<Room>>>;
 
 pub struct Room {
@@ -28,11 +34,15 @@ pub struct RoomState {
     pub last_action: u64
 }
 
-pub struct State {
-    pub rooms: Rooms,
-}
+impl RoomState {
+    pub fn touch(&mut self) {
+        self.last_action = current_time_secs()
+    }
 
-pub type AppState = Arc<State>;
+    pub fn push_message(&mut self, text: String) {
+        self.messages.push(text)
+    }
+}
 
 pub fn new_app_state() -> AppState {
     // create the room storage

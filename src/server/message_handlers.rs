@@ -38,10 +38,10 @@ pub enum MsgOutCode {
 
 // output message to represent a chat message
 #[derive(Serialize)]
-pub struct ChatMsgOut {
+pub struct ChatMsgOut<'a> {
     pub msg_code: MsgOutCode,
     pub sender_id: Uuid,
-    pub text: String,
+    pub text: &'a String,
 }
 
 // output message to represent joining or leaving the room
@@ -51,7 +51,7 @@ pub struct RoomMsgOut {
     pub sender_id: Uuid,
 }
 
-// output message to represent joining or leaving the room
+// output message to represent the chat log state
 #[derive(Serialize)]
 pub struct ChatLogMsgOut<'a> {
     pub msg_code: MsgOutCode,
@@ -67,22 +67,20 @@ pub async fn handle_chat(text: String, context: &ConnContext) -> Res<()> {
     let msg_out = ChatMsgOut {
         msg_code: MsgOutCode::Chat,
         sender_id: context.sender,
-        text: msg_in.text,
+        text: &msg_in.text,
     };
     // broadcast the result to all members of the room
     let result_out = serde_json::to_string(&msg_out)?;
     context.broadcast(result_out)?;
-    // update the room to not be expired
-    context.touch_room().await;
-    // add the message to the room
-    context.push_message(msg_out.text).await;
+    // update the room to not be expired and add message to room
+    let mut room = context.lock_room().await;
+    room.touch();
+    room.push_message(msg_in.text);
     Ok(())
 }
 
 pub async fn handle_join(joiner_tx: &mut SingleSender, context: &ConnContext) -> Res<()> {
     info!("Handling a joiner: {}", context.sender);
-    // increment count because new joiner
-    context.inc_user_count().await;
     // serialize then broadcast chat message
     let join_msg_out = RoomMsgOut {
         msg_code: MsgOutCode::Join,
@@ -91,8 +89,9 @@ pub async fn handle_join(joiner_tx: &mut SingleSender, context: &ConnContext) ->
     // broadcast the result to all members of the room
     let join_result_out = serde_json::to_string(&join_msg_out)?;
     context.broadcast(join_result_out)?;
-    // get a mutex guard to the room
-    let room = context.lock_room().await;
+    // get the room mutex guard then increment count because joiner
+    let mut room = context.lock_room().await;
+    room.user_count += 1;
     // serialize the current room state then send to the joiner
     let cl_msg_out = ChatLogMsgOut {
         msg_code: MsgOutCode::ChatLog,
@@ -105,8 +104,6 @@ pub async fn handle_join(joiner_tx: &mut SingleSender, context: &ConnContext) ->
 
 pub async fn handle_leave(context: &ConnContext) -> Res<()> {
     info!("Handling a leaver: {}", context.sender);
-    // decrement count because leaver
-    context.dec_user_count().await;
     // serialize then broadcast chat message
     let msg_out = RoomMsgOut {
         msg_code: MsgOutCode::Leave,
@@ -115,5 +112,7 @@ pub async fn handle_leave(context: &ConnContext) -> Res<()> {
     // broadcast the result to all members of the room
     let result_out = serde_json::to_string(&msg_out)?;
     context.broadcast(result_out)?;
+    // decrement count because leaver
+    context.lock_room().await.user_count -= 1;
     Ok(())
 }
