@@ -21,11 +21,12 @@ async fn main() {
 
     tracing_subscriber::fmt::init();
 
+    println!("Started the server on port 8080...");
+
     let store = async_session::MemoryStore::new();
     let session_layer = SessionLayer::new(store, session_secret.as_bytes());
 
     let app = Router::new()
-        .route("/", get(|| async { "Hello, World!" }))
         .route("/rooms", post(handle_create_room))
         .route("/rooms/socket", get(handle_ws_upgrade))
         .with_state(rooms.clone())

@@ -3,7 +3,6 @@
  */
 
 use axum_sessions::extractors::WritableSession;
-use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 pub type User = Uuid;

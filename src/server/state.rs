@@ -3,14 +3,13 @@
  */
 
 use dashmap::DashMap;
-use std::sync::Arc;
-use std::time::Duration;
-use dashmap::mapref::multiple::{RefMulti};
+use std::{sync::Arc, time::SystemTime};
+use std::time::{Duration, UNIX_EPOCH};
+use dashmap::mapref::multiple::RefMulti;
 use tokio::sync::{broadcast, Mutex};
 use uuid::Uuid;
 use serde::{Deserialize, Serialize};
 use tokio::time;
-use crate::server::libs::current_time_secs;
 
 pub const MIN_AGE: u64 = 3600;
 
@@ -36,7 +35,10 @@ pub struct RoomState {
 
 impl RoomState {
     pub fn touch(&mut self) {
-        self.last_action = current_time_secs()
+        self.last_action = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("Time went backwards???")
+            .as_secs()
     }
 
     pub fn push_message(&mut self, text: String) {
@@ -45,28 +47,30 @@ impl RoomState {
 }
 
 pub fn new_app_state() -> AppState {
-    // create the room storage
     let rooms = Arc::new(DashMap::with_capacity_and_shard_amount(1000, 16));
-    // start a cronjob to prune expired rooms from the map
+
     prune_rooms(rooms.clone());
-    // create application state
+
     Arc::new(State { rooms })
 }
 
 pub fn prune_rooms(rooms: Rooms) {
     // create a background task to prune out expired room entries (garbage collection)
     tokio::spawn(async move {
-        // create an interval to run this operation every hour
-        let mut interval = time::interval(Duration::from_secs(60 * 60));
+        let mut interval = time::interval(Duration::from_secs(60 * 60)); // every hour
         loop {
             interval.tick().await;
-            // iterate through each room to check if it should be pruned
             for e in rooms.iter() {
                 let entry: RefMulti<Uuid, Arc<Room>> = e;
                 let pair = entry.pair();
-                // check if the last action was old enough to expire the entry
+                
                 let last_action = pair.1.room_state.lock().await.last_action;
-                if current_time_secs() - last_action > MIN_AGE {
+
+                let current_time_secs = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .expect("Time went backwards???")
+                    .as_secs();
+                if current_time_secs - last_action > MIN_AGE {
                     rooms.remove(pair.0);
                 }
             }
