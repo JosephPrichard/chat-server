@@ -31,7 +31,7 @@ Establish a websocket connection with a room on the server and send any of the f
     "text": "<string>"
 }`
 
-The client can expected to retrieve any of the following messages
+The client can expected to receive any of the following messages
 
 `
 {
@@ -42,12 +42,10 @@ The client can expected to retrieve any of the following messages
 }
 `
 
-`
-{
-    "msg_code": "ChatLog",
-    "messages": [
-        "<string>"
-    ]
+`{
+    "msg_code": "Chat",
+    "sender_id": "<string>",
+    "text": "<string>"
 }`
 
 `{
