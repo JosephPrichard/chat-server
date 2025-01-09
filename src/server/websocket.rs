@@ -12,15 +12,15 @@ use axum::Json;
 use axum::response::{IntoResponse, Response};
 use axum_sessions::extractors::WritableSession;
 use tracing::log::info;
-use crate::server::session::get_user;
 use crate::server::state::{AppState, Room, RoomState};
 use axum::extract::ws::{Message, WebSocket};
 use futures::{SinkExt, stream::StreamExt};
 use tokio::sync::broadcast::error::SendError;
 use tokio::sync::{broadcast, Mutex, MutexGuard};
 use tracing::log::warn;
-use crate::server::message_handlers::{handle_chat, handle_join, handle_leave, MsgIn, MsgInCode};
-use crate::server::session::User;
+use crate::server::handlers::{handle_chat, handle_join, handle_leave, MsgIn, MsgInCode};
+
+use super::handlers::HandlerError;
 
 pub const MAX_ROOM_SIZE: usize = 12;
 
@@ -61,7 +61,7 @@ pub async fn handle_create_room(State(state): State<AppState>) -> Json<RoomId> {
         .expect("Time went backwards???")
         .as_secs();
 
-    state.rooms.insert(uuid, Arc::new(Room {
+    state.insert(uuid, Arc::new(Room {
         broadcast_tx: broadcast::channel(128).0,
         room_state: Mutex::new(RoomState {
             messages: vec![],
@@ -74,6 +74,26 @@ pub async fn handle_create_room(State(state): State<AppState>) -> Json<RoomId> {
     Json(RoomId { room_id: uuid.to_string() })
 }
 
+pub type User = Uuid;
+
+pub fn set_user(mut sess_writer: WritableSession, sess: &User) {
+    sess_writer
+        .insert("session", sess)
+        .expect("Could not store the session.");
+}
+
+pub fn get_user(sess_writer: WritableSession) -> User {
+    let fetched_sess: Option<User> = sess_writer.get("session");
+    match fetched_sess {
+        Some(sess) => sess,
+        None => {
+            let guest_sess = Uuid::new_v4();
+            set_user(sess_writer, &guest_sess);
+            guest_sess.clone()
+        }
+    }
+}
+
 pub async fn handle_ws_upgrade(
     ws: WebSocketUpgrade,
     State(state): State<AppState>,
@@ -82,7 +102,7 @@ pub async fn handle_ws_upgrade(
 ) -> Response {
     match Uuid::parse_str(&params.room_id) {
         Err(_) => error_res(StatusCode::BAD_REQUEST, "Invalid uuid format"),
-        Ok(room_id) => match state.rooms.get(&room_id) {
+        Ok(room_id) => match state.get(&room_id) {
             None => error_res(StatusCode::NOT_FOUND, "No room exists for id"),
             Some(room) => {
                 let sender = get_user(sess_writer);
@@ -122,7 +142,6 @@ pub async fn handle_socket(ws: WebSocket, context: ConnContext) {
     // spawn a task to handle each message from the websocket receiver
     let recv_context = context.clone();
     let mut recv_task = tokio::spawn(async move {
-
         while let Some(Ok(Message::Text(text))) = rx.next().await {
             if let Err(e) = handle_socket_recv(text, &recv_context).await {
                 warn!("Error occurred in recv: {}", e.to_string())
@@ -132,9 +151,7 @@ pub async fn handle_socket(ws: WebSocket, context: ConnContext) {
 
     // if any one of the tasks exit, abort the other
     tokio::select! {
-        _ = (&mut send_task) => {
-            recv_task.abort()
-        },
+        _ = (&mut send_task) => recv_task.abort(),
         _ = (&mut recv_task) => {
             // if the receiver aborts, broadcast using sender that they left
             if let Err(e) = handle_leave(&context).await {
@@ -145,9 +162,10 @@ pub async fn handle_socket(ws: WebSocket, context: ConnContext) {
     }
 }
 
-async fn handle_socket_recv(text: String, context: &ConnContext) -> Result<(), Box<dyn std::error::Error>> {
-    let msg: MsgIn = serde_json::from_str(&text)?;
+async fn handle_socket_recv(text: String, context: &ConnContext) -> Result<(), HandlerError> {
+    let msg: MsgIn = serde_json::from_str(&text).map_err(HandlerError::Serde)?;
     match msg.msg_code {
-        MsgInCode::Chat => handle_chat(text, context).await
+        MsgInCode::Chat => handle_chat(text, context).await,
+        // ... add the handlers for each message handler here
     }
 }

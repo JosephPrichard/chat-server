@@ -15,11 +15,7 @@ pub const MIN_AGE: u64 = 3600;
 
 pub type AppState = Arc<State>;
 
-pub struct State {
-    pub rooms: Rooms,
-}
-
-pub type Rooms = Arc<DashMap<Uuid, Arc<Room>>>;
+pub type State = Arc<DashMap<Uuid, Arc<Room>>>;
 
 pub struct Room {
     pub room_state: Mutex<RoomState>,
@@ -48,19 +44,17 @@ impl RoomState {
 
 pub fn new_app_state() -> AppState {
     let rooms = Arc::new(DashMap::with_capacity_and_shard_amount(1000, 16));
-
     prune_rooms(rooms.clone());
-
-    Arc::new(State { rooms })
+    Arc::new(rooms)
 }
 
-pub fn prune_rooms(rooms: Rooms) {
+pub fn prune_rooms(state: State) {
     // create a background task to prune out expired room entries (garbage collection)
     tokio::spawn(async move {
         let mut interval = time::interval(Duration::from_secs(60 * 60)); // every hour
         loop {
             interval.tick().await;
-            for e in rooms.iter() {
+            for e in state.iter() {
                 let entry: RefMulti<Uuid, Arc<Room>> = e;
                 let pair = entry.pair();
                 
@@ -71,7 +65,7 @@ pub fn prune_rooms(rooms: Rooms) {
                     .expect("Time went backwards???")
                     .as_secs();
                 if current_time_secs - last_action > MIN_AGE {
-                    rooms.remove(pair.0);
+                    state.remove(pair.0);
                 }
             }
         }

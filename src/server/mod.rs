@@ -2,7 +2,6 @@
  * Copyright (c) Joseph Prichard 2022.
  */
 
-pub(crate) mod session;
 pub(crate) mod state;
-pub(crate) mod socket_server;
-pub(crate) mod message_handlers;
+pub(crate) mod websocket;
+pub(crate) mod handlers;

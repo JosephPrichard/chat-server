@@ -7,7 +7,7 @@ use axum::Router;
 use axum::routing::{get, post};
 use axum_sessions::{async_session, SessionLayer};
 use dotenv::dotenv;
-use crate::server::socket_server::{handle_create_room, handle_ws_upgrade};
+use crate::server::websocket::{handle_create_room, handle_ws_upgrade};
 use crate::server::state::new_app_state;
 
 mod server;
